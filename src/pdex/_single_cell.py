@@ -538,13 +538,28 @@ def _parallel_differential_expression_chunked(
 
     # Build final dataframe
     df = pd.DataFrame(all_results)
-    df["p_value"] = df["p_value"].fillna(1.0)
+    
+    df["p_value"] = (
+        pd.to_numeric(df["p_value"], errors="coerce")
+        .fillna(1.0)
+        .clip(lower=0.0, upper=1.0)
+    )
 
     try:
         df["fdr"] = false_discovery_control(df["p_value"].values, method="bh")
-    except ValueError:
-        logger.warning("FDR computation failed, using raw p-values")
-        df["fdr"] = df["p_value"].copy()
+    except ValueError as ve:
+        logger.warning(ve)
+        logger.warning("Sanitizing p-values and retrying FDR calculation")
+        df["p_value"] = (
+            pd.to_numeric(df["p_value"], errors="coerce")
+            .fillna(1.0)
+            .clip(lower=0.0, upper=1.0)
+        )
+        try:
+            df["fdr"] = false_discovery_control(df["p_value"].values, method="bh")
+        except ValueError:
+            logger.error("Failed to compute FDR after sanitization - copying p-values")
+            df["fdr"] = df["p_value"].copy()
 
     if as_polars:
         return pl.DataFrame(df)
@@ -702,17 +717,34 @@ def _parallel_differential_expression_standard(
     _conclude_shared_memory(shared_memory)
 
     dataframe = pd.DataFrame(results)
-    dataframe["p_value"] = dataframe["p_value"].fillna(
-        1.0
-    )  # ensure p-values are not NaN ( set to 1.0 )
 
+    # Coerce p-values to numeric, replace missing with 1, clip to [0, 1]
+    dataframe["p_value"] = (
+        pd.to_numeric(dataframe["p_value"], errors="coerce")
+        .fillna(1.0)
+        .clip(lower=0.0, upper=1.0)
+    )
+
+    # Compute FDR (Benjamini–Hochberg) with robust fallback
     try:
         dataframe["fdr"] = false_discovery_control(
             dataframe["p_value"].values, method="bh"
         )
-    except ValueError:
-        logger.error("Failed to compute FDR - copying p-values")
-        dataframe["fdr"] = dataframe["p_value"].copy()
+    except ValueError as ve:
+        logger.warning(ve)
+        logger.warning("Sanitizing p-values and retrying FDR calculation")
+        dataframe["p_value"] = (
+            pd.to_numeric(dataframe["p_value"], errors="coerce")
+            .fillna(1.0)
+            .clip(lower=0.0, upper=1.0)
+        )
+        try:
+            dataframe["fdr"] = false_discovery_control(
+                dataframe["p_value"].values, method="bh"
+            )
+        except ValueError:
+            logger.error("Failed to compute FDR after sanitization - copying p-values")
+            dataframe["fdr"] = dataframe["p_value"].copy()
 
     if as_polars:
         return pl.DataFrame(dataframe)
@@ -1097,7 +1129,21 @@ def parallel_differential_expression_vec(
 
     # Create dataframe
     dataframe = pd.DataFrame(all_results)
-    dataframe["fdr"] = false_discovery_control(dataframe["p_value"].values, method="bh")
+
+    dataframe["p_value"] = (
+        pd.to_numeric(dataframe["p_value"], errors="coerce")
+        .fillna(1.0)
+        .clip(lower=0.0, upper=1.0)
+    )
+
+    try:
+        dataframe["fdr"] = false_discovery_control(
+            dataframe["p_value"].values, method="bh"
+        )
+    except ValueError as ve:
+        logger.warning(ve)
+        logger.error("Failed to compute FDR after sanitization - copying p-values")
+        dataframe["fdr"] = dataframe["p_value"].copy()
 
     if as_polars:
         return pl.DataFrame(dataframe)
